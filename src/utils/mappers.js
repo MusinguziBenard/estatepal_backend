@@ -1,30 +1,38 @@
 /**
- * Map DB rows -> frontend API shapes (matches estatepal app types).
+ * Map DB rows -> frontend API shapes. Field names here are deliberately matched
+ * 1:1 to the mobile app's src/api/types.ts — do not rename without updating both.
  */
 
 /**
  * @param {object} row
- * @param {{ self?: boolean, admin?: boolean }} opts  self/admin see extra private fields (email, profile picture,
- *   verification status/reason). The ID photo URL itself is only ever returned to self or admin, never publicly.
+ * @param {{ admin?: boolean }} opts  admin sees extra fields never sent to a normal user
+ *   (ID photo URL, rejection reason, submission timestamp). Never included otherwise.
  */
 function mapUser(row, opts = {}) {
   if (!row) return null;
-  const privileged = !!(opts.self || opts.admin);
-  return {
+  const base = {
     id: row.id,
     phone: row.phone,
-    name: row.name || undefined,
     email: row.email || undefined,
-    emailVerified: !!row.email_verified_at,
-    profilePictureUrl: row.profile_picture_url || undefined,
-    identityVerificationStatus: row.identity_verification_status,
-    identityRejectionReason: privileged ? row.identity_rejection_reason || undefined : undefined,
-    idPhotoUrl: privileged ? row.id_photo_url || undefined : undefined,
-    idSubmittedAt: privileged ? row.id_submitted_at || undefined : undefined,
-    acceptedTermsAt: row.accepted_terms_at || undefined,
-    notificationsEnabled: privileged ? row.notifications_enabled !== false : undefined,
+    name: row.name || undefined,
+    avatarUrl: row.profile_picture_url || undefined,
     role: row.role,
+    emailVerified: !!row.email_verified_at,
+    phoneVerified: !!row.phone_verified_at,
+    identityVerificationStatus: row.identity_verification_status,
+    pushEnabled: row.notifications_enabled !== false,
+    acceptedTermsAt: row.accepted_terms_at || undefined,
   };
+  if (opts.admin) {
+    return {
+      ...base,
+      idPhotoUrl: row.id_photo_url || undefined,
+      idFullName: row.id_full_name || undefined,
+      idSubmittedAt: row.id_submitted_at || undefined,
+      identityRejectionReason: row.identity_rejection_reason || undefined,
+    };
+  }
+  return base;
 }
 
 /**
@@ -58,6 +66,7 @@ function mapListing(row, opts = {}) {
     likes: row.likes_count ?? 0,
     liked: !!opts.liked,
     requestsCount: row.requests_count ?? 0,
+    views: row.views_count ?? undefined,
   };
 
   if (isUnlocked && row.contact_phone) {

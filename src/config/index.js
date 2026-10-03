@@ -32,7 +32,9 @@ const config = {
     port: num(process.env.SMTP_PORT, 587),
     user: process.env.SMTP_USER,
     pass: process.env.SMTP_PASS,
-    from: process.env.SMTP_FROM || 'EstatePal <no-reply@estatepal.app>',
+    // .env uses EMAIL_FROM; SMTP_FROM accepted too for compatibility. Falls back to
+    // SMTP_USER because providers like Gmail reject a From that isn't the authenticated account.
+    from: process.env.EMAIL_FROM || process.env.SMTP_FROM || process.env.SMTP_USER || 'EstatePal <no-reply@estatepal.app>',
   },
 
   emailCodeTtlMinutes: 10,
@@ -50,6 +52,11 @@ const config = {
   listingExpiryDays: 30,
   otpTtlMinutes: 10,
   pageSize: 12,
+
+  // Sessions are sliding-window: every authenticated request that lands when less than
+  // half the window remains pushes expiry back out to sessionDays. An active user is
+  // effectively never logged out; a dormant one expires after ~a year of inactivity.
+  sessionDays: num(process.env.SESSION_DAYS, 365),
 };
 
 function assertConfig() {

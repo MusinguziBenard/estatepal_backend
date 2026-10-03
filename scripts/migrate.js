@@ -2,6 +2,7 @@
  * Applies sql/schema.sql against Supabase via the REST SQL isn't available —
  * print instructions and optionally use pg if DATABASE_URL is set.
  */
+require('dotenv').config();
 const fs = require('fs');
 const path = require('path');
 

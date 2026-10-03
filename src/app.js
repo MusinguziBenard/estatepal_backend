@@ -13,6 +13,7 @@ const paymentsRoutes = require('./modules/payments/routes');
 const devicesRoutes = require('./modules/devices/routes');
 const usersRoutes = require('./modules/users/routes');
 const adminRoutes = require('./modules/admin/routes');
+const verificationRoutes = require('./modules/verification/routes');
 
 function createApp() {
   const app = express();
@@ -44,6 +45,7 @@ function createApp() {
   app.use('/payments', paymentsRoutes);
   app.use('/devices', devicesRoutes);
   app.use('/admin', adminRoutes);
+  app.use('/verification', verificationRoutes);
 
   app.use(errorMiddleware);
   return app;

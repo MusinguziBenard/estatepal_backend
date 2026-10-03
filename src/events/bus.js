@@ -13,6 +13,7 @@ const EVENTS = {
   USER_SIGNED_UP: 'user.signed_up',
   USER_SIGNED_IN: 'user.signed_in',
   EMAIL_VERIFIED: 'user.email_verified',
+  PHONE_VERIFIED: 'user.phone_verified',
   IDENTITY_SUBMITTED: 'user.identity_submitted',
   IDENTITY_VERIFIED: 'user.identity_verified',
   IDENTITY_REJECTED: 'user.identity_rejected',

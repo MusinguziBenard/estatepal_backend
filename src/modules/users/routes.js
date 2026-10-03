@@ -30,7 +30,23 @@ router.patch(
     if (req.body.email) patch.email = auth.normalizeEmail(req.body.email);
     const { data, error } = await supabase.from('users').update(patch).eq('id', req.user.id).select('*').single();
     if (error) throw error;
-    res.json(mapUser(data, { self: true }));
+    res.json(mapUser(data));
+  })
+);
+
+// Consolidated profile update the app actually calls: PATCH /me/profile { name?, avatar?, pushEnabled? }
+router.patch(
+  '/profile',
+  requireAuth,
+  validate(
+    z.object({
+      name: z.string().min(2).optional(),
+      avatar: z.string().optional(), // data: URL or remote URL
+      pushEnabled: z.boolean().optional(),
+    })
+  ),
+  asyncHandler(async (req, res) => {
+    res.json(await auth.updateProfile(req.user.id, req.body));
   })
 );
 
@@ -54,7 +70,7 @@ router.post(
       .select('*')
       .single();
     if (error) throw error;
-    res.json(mapUser(data, { self: true }));
+    res.json(mapUser(data));
   })
 );
 
@@ -82,7 +98,7 @@ router.patch(
       .select('*')
       .single();
     if (error) throw error;
-    res.json(mapUser(data, { self: true }));
+    res.json(mapUser(data));
   })
 );
 

@@ -9,12 +9,10 @@ const {
   comparePassword,
 } = require('../../utils/crypto');
 const { mapUser } = require('../../utils/mappers');
-const { validation, unauthorized, conflict } = require('../../utils/errors');
+const { validation, unauthorized, conflict, notFound } = require('../../utils/errors');
 const { emit, EVENTS } = require('../../events/bus');
 const { uploadImage } = require('../../services/cloudinary');
 const { sendVerificationCode } = require('../../services/email');
-
-const SESSION_DAYS = 60;
 
 function normalizePhone(phone) {
   const p = String(phone || '').replace(/\s/g, '');
@@ -32,7 +30,7 @@ function normalizeEmail(email) {
 async function createSession(userId) {
   const rawToken = randomToken(32);
   const tokenHash = sha256(rawToken);
-  const expiresAt = new Date(Date.now() + SESSION_DAYS * 86400_000).toISOString();
+  const expiresAt = new Date(Date.now() + config.sessionDays * 86400_000).toISOString();
   await supabase.from('sessions').insert({ user_id: userId, token_hash: tokenHash, expires_at: expiresAt });
   return rawToken;
 }
@@ -60,14 +58,14 @@ async function sendEmailCodeInternal(userId, email) {
 }
 
 /**
- * Registration collects name, phone and password up front (required), with
- * email and a profile picture optional. If an email is given we immediately
- * fire off a verification code (self-serve, checked via /auth/email/verify).
- * Phone verification is a later feature -- the number is only collected and
- * stored here; real SMS verification is wired up separately. The account is
- * usable (session returned) right after registering so sign-up stays fast.
+ * Registration collects name, phone and password up front (required), with email and
+ * an avatar optional. This is the "start with email" gate the product wants: if an
+ * email is given, the account is created but NOT logged in yet — a code is fired off
+ * and the app is told `needsEmailVerification`, so verify-email is step two. With no
+ * email, phone+password is enough and a session is returned immediately. Phone
+ * verification is always a separate, later, optional step (requestPhoneOtp/verifyPhone).
  */
-async function register({ name, phone, password, email, acceptedTerms, profilePicture }) {
+async function register({ name, phone, password, email, acceptedTerms, avatar }) {
   const normPhone = normalizePhone(phone);
   const normEmail = normalizeEmail(email);
   if (!name || String(name).trim().length < 2) throw validation('Please enter your name');
@@ -85,10 +83,8 @@ async function register({ name, phone, password, email, acceptedTerms, profilePi
   const passwordHash = await hashPassword(password);
   const isAdminPhone = config.adminPhones.includes(normPhone);
 
-  let profilePictureUrl = null;
-  if (profilePicture) {
-    profilePictureUrl = await uploadDataUrl(profilePicture, 'estatepal/profiles', `profile-${Date.now()}`);
-  }
+  let avatarUrl = null;
+  if (avatar) avatarUrl = await uploadDataUrl(avatar, 'estatepal/profiles', `profile-${Date.now()}`);
 
   const { data: user, error } = await supabase
     .from('users')
@@ -97,7 +93,7 @@ async function register({ name, phone, password, email, acceptedTerms, profilePi
       phone: normPhone,
       email: normEmail,
       password_hash: passwordHash,
-      profile_picture_url: profilePictureUrl,
+      profile_picture_url: avatarUrl,
       role: isAdminPhone ? 'admin' : 'user',
       accepted_terms_at: new Date().toISOString(),
     })
@@ -105,45 +101,58 @@ async function register({ name, phone, password, email, acceptedTerms, profilePi
     .single();
   if (error) throw error;
 
-  const token = await createSession(user.id);
-
   emit(EVENTS.USER_SIGNED_UP, { userId: user.id, phone: user.phone, name: user.name });
 
   if (normEmail) {
-    // Best-effort -- registration still succeeds even if the email can't be sent.
-    sendEmailCodeInternal(user.id, normEmail).catch((e) => console.warn('[email] verification send failed', e.message));
+    await sendEmailCodeInternal(user.id, normEmail);
+    return { needsEmailVerification: true, email: normEmail };
   }
 
-  return { token, user: mapUser(user, { self: true }) };
+  const token = await createSession(user.id);
+  return { token, user: mapUser(user) };
 }
 
-async function login(phoneRaw, password) {
-  const phone = normalizePhone(phoneRaw);
-  const { data: user } = await supabase.from('users').select('*').eq('phone', phone).maybeSingle();
+/**
+ * Accepts phone OR email + password. If the account has an email that hasn't been
+ * verified yet, login is blocked with `needsEmailVerification` instead of a token —
+ * mirrors register()'s gate so a half-finished signup can always be resumed.
+ */
+async function login({ phone, email, password }) {
+  if (!phone && !email) throw validation('Enter your phone number or email');
+
+  let query = supabase.from('users').select('*');
+  query = phone ? query.eq('phone', normalizePhone(phone)) : query.eq('email', normalizeEmail(email));
+  const { data: user } = await query.maybeSingle();
+
   if (!user || !(await comparePassword(password, user.password_hash))) {
-    throw unauthorized('Wrong phone number or password');
+    throw unauthorized('Wrong phone/email or password');
   }
+
+  if (user.email && !user.email_verified_at) {
+    await sendEmailCodeInternal(user.id, user.email);
+    return { needsEmailVerification: true, email: user.email, message: 'Verify your email first — we just sent you a new code.' };
+  }
+
   const token = await createSession(user.id);
   emit(EVENTS.USER_SIGNED_IN, { userId: user.id, phone: user.phone });
-  return { token, user: mapUser(user, { self: true }) };
+  return { token, user: mapUser(user) };
 }
 
-async function requestEmailCode(userId) {
-  const { data: user } = await supabase.from('users').select('*').eq('id', userId).single();
-  if (!user.email) throw validation('Add an email address first');
-  if (user.email_verified_at) return { ok: true, alreadyVerified: true };
-  await sendEmailCodeInternal(userId, user.email);
-  return { ok: true };
-}
-
-async function verifyEmailCode(userId, code) {
-  const { data: user } = await supabase.from('users').select('*').eq('id', userId).single();
-  if (!user.email) throw validation('No email on this account');
+/**
+ * Public (no auth yet — this is what completes a pending registration/login).
+ * Verifies the code, marks the email verified, and — since this is the moment the
+ * account becomes fully usable — issues the session here.
+ */
+async function verifyEmail(emailRaw, code) {
+  const email = normalizeEmail(emailRaw);
+  if (!email) throw validation('Email required');
+  const { data: user } = await supabase.from('users').select('*').eq('email', email).maybeSingle();
+  if (!user) throw notFound('No account with this email');
 
   const { data: rows } = await supabase
     .from('email_codes')
     .select('*')
-    .eq('user_id', userId)
+    .eq('user_id', user.id)
     .eq('used', false)
     .gte('expires_at', new Date().toISOString())
     .order('created_at', { ascending: false })
@@ -156,62 +165,40 @@ async function verifyEmailCode(userId, code) {
   const { data: updated } = await supabase
     .from('users')
     .update({ email_verified_at: new Date().toISOString() })
-    .eq('id', userId)
+    .eq('id', user.id)
     .select('*')
     .single();
 
-  emit(EVENTS.EMAIL_VERIFIED, { userId, email: user.email });
-  return mapUser(updated, { self: true });
+  emit(EVENTS.EMAIL_VERIFIED, { userId: user.id, email });
+
+  const token = await createSession(user.id);
+  return { token, user: mapUser(updated) };
 }
 
-/**
- * ID verification submission (self-serve upload, admin-reviewed). Optional --
- * users can keep using the app without it. The photo itself is never exposed
- * in public payloads; only self and admin views include it.
- */
-async function submitIdentity(userId, { idPhoto, fullNameOnId }) {
-  if (!idPhoto) throw validation('An ID photo is required to submit for verification');
-  const url = await uploadDataUrl(idPhoto, 'estatepal/verification', `id-${userId}-${Date.now()}`);
-
-  const { data: updated, error } = await supabase
-    .from('users')
-    .update({
-      id_photo_url: url,
-      id_submitted_at: new Date().toISOString(),
-      identity_verification_status: 'PENDING',
-      identity_rejection_reason: null,
-    })
-    .eq('id', userId)
-    .select('*')
-    .single();
-  if (error) throw error;
-
-  emit(EVENTS.IDENTITY_SUBMITTED, { userId, fullNameOnId });
-  return mapUser(updated, { self: true });
-}
-
-/** --- Legacy / future: phone OTP (kept for when SMS verification is wired up) --- */
-
-async function requestOtp(phoneRaw) {
-  const phone = normalizePhone(phoneRaw);
-  const code = process.env.NODE_ENV === 'development' && process.env.DEV_OTP
-    ? process.env.DEV_OTP
-    : generateOtp();
-
-  const expires = new Date(Date.now() + config.otpTtlMinutes * 60_000).toISOString();
-  await supabase.from('otp_codes').update({ used: true }).eq('phone', phone).eq('used', false);
-  const { error } = await supabase.from('otp_codes').insert({ phone, code, expires_at: expires });
-  if (error) throw error;
-
-  if (config.env !== 'production') console.log(`[otp] ${phone} -> ${code}`);
-  // Production: integrate SMS provider (Africa's Talking, Twilio, etc.)
+/** Public — resend while the account still has no password-protected session. */
+async function resendEmailOtp(emailRaw) {
+  const email = normalizeEmail(emailRaw);
+  const { data: user } = await supabase.from('users').select('*').eq('email', email).maybeSingle();
+  if (!user) throw notFound('No account with this email');
+  if (user.email_verified_at) return { ok: true, message: 'This email is already verified — just log in.' };
+  await sendEmailCodeInternal(user.id, email);
   return { ok: true };
 }
 
-async function verifyOtp(phoneRaw, code) {
-  const phone = normalizePhone(phoneRaw);
-  if (!code || String(code).length < 4) throw validation('Invalid code');
+/** ─── Phone verification: authenticated, always a later/optional step ─── */
 
+async function requestPhoneOtp(userId, phone) {
+  const code = process.env.NODE_ENV === 'development' && process.env.DEV_OTP ? process.env.DEV_OTP : generateOtp();
+  const expires = new Date(Date.now() + config.otpTtlMinutes * 60_000).toISOString();
+  await supabase.from('otp_codes').update({ used: true }).eq('phone', phone).eq('used', false);
+  await supabase.from('otp_codes').insert({ phone, code, expires_at: expires });
+  if (config.env !== 'production') console.log(`[otp] ${phone} -> ${code}`);
+  // Production: integrate an SMS provider (Africa's Talking, Twilio, etc.) here.
+  return { ok: true };
+}
+
+async function verifyPhone(userId, phone, code) {
+  if (!code || String(code).length < 4) throw validation('Invalid code');
   const { data: rows } = await supabase
     .from('otp_codes')
     .select('*')
@@ -225,14 +212,62 @@ async function verifyOtp(phoneRaw, code) {
   if (!otp || otp.code !== String(code).trim()) throw unauthorized('Wrong or expired code');
   await supabase.from('otp_codes').update({ used: true }).eq('id', otp.id);
 
-  const { data: user } = await supabase.from('users').select('*').eq('phone', phone).maybeSingle();
-  if (!user) throw unauthorized('No account with this phone number -- register first');
+  const { data: updated, error } = await supabase
+    .from('users')
+    .update({ phone_verified_at: new Date().toISOString() })
+    .eq('id', userId)
+    .select('*')
+    .single();
+  if (error) throw error;
 
-  const token = await createSession(user.id);
-  emit(EVENTS.USER_SIGNED_IN, { userId: user.id, phone: user.phone });
-  return { token, user: mapUser(user, { self: true }) };
+  emit(EVENTS.PHONE_VERIFIED, { userId, phone });
+  return { user: mapUser(updated) };
 }
 
+/**
+ * ID verification submission (self-serve upload, admin-reviewed). Optional —
+ * users can keep using the app without it. The photo itself is never exposed
+ * in public payloads; only admin endpoints include it.
+ */
+async function submitIdentity(userId, { nationalIdImage, nationalIdName }) {
+  if (!nationalIdImage) throw validation('A national ID photo is required');
+  const url = await uploadDataUrl(nationalIdImage, 'estatepal/verification', `id-${userId}-${Date.now()}`);
+
+  const { data: updated, error } = await supabase
+    .from('users')
+    .update({
+      id_photo_url: url,
+      id_full_name: nationalIdName || null,
+      id_submitted_at: new Date().toISOString(),
+      identity_verification_status: 'PENDING',
+      identity_rejection_reason: null,
+    })
+    .eq('id', userId)
+    .select('*')
+    .single();
+  if (error) throw error;
+
+  emit(EVENTS.IDENTITY_SUBMITTED, { userId, fullNameOnId: nationalIdName });
+  return mapUser(updated);
+}
+
+/** Consolidated profile update: name / avatar / push preference, any subset. */
+async function updateProfile(userId, { name, avatar, pushEnabled }) {
+  const patch = {};
+  if (name != null) patch.name = String(name).trim();
+  if (pushEnabled != null) patch.notifications_enabled = !!pushEnabled;
+  if (avatar) patch.profile_picture_url = await uploadDataUrl(avatar, 'estatepal/profiles', `profile-${userId}-${Date.now()}`);
+
+  const { data, error } = await supabase.from('users').update(patch).eq('id', userId).select('*').single();
+  if (error) throw error;
+  return mapUser(data);
+}
+
+/**
+ * Resolves a bearer token to a user, sliding the session's expiry forward when it's
+ * more than half spent — an active user is effectively never logged out, while a
+ * token nobody has used in config.sessionDays/2 .. sessionDays stops renewing itself.
+ */
 async function resolveSession(rawToken) {
   if (!rawToken) return null;
   const tokenHash = sha256(rawToken);
@@ -244,12 +279,25 @@ async function resolveSession(rawToken) {
     .maybeSingle();
 
   if (!session?.users) return null;
-  return mapUser(session.users, { self: true });
+
+  const msRemaining = new Date(session.expires_at).getTime() - Date.now();
+  const halfWindowMs = (config.sessionDays * 86400_000) / 2;
+  if (msRemaining < halfWindowMs) {
+    const newExpiry = new Date(Date.now() + config.sessionDays * 86400_000).toISOString();
+    supabase.from('sessions').update({ expires_at: newExpiry }).eq('id', session.id).then(() => {}).catch(() => {});
+  }
+
+  return mapUser(session.users);
 }
 
 async function me(userId) {
   const { data } = await supabase.from('users').select('*').eq('id', userId).single();
-  return mapUser(data, { self: true });
+  return mapUser(data);
+}
+
+async function meAdmin(userId) {
+  const { data } = await supabase.from('users').select('*').eq('id', userId).single();
+  return mapUser(data, { admin: true });
 }
 
 async function revokeSession(rawToken) {
@@ -260,13 +308,15 @@ async function revokeSession(rawToken) {
 module.exports = {
   register,
   login,
-  requestEmailCode,
-  verifyEmailCode,
+  verifyEmail,
+  resendEmailOtp,
+  requestPhoneOtp,
+  verifyPhone,
   submitIdentity,
-  requestOtp,
-  verifyOtp,
+  updateProfile,
   resolveSession,
   me,
+  meAdmin,
   revokeSession,
   normalizePhone,
   normalizeEmail,

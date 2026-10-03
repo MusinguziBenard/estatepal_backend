@@ -40,6 +40,16 @@ function registerListeners() {
     });
   });
 
+  on(EVENTS.PHONE_VERIFIED, async (e) => {
+    if (!e.userId) return;
+    const tokens = await tokensForUsers([e.userId]);
+    await notify(tokens, {
+      title: 'Phone number verified ✅',
+      body: 'Your phone number is now confirmed.',
+      data: { type: 'PHONE_VERIFIED' },
+    });
+  });
+
   on(EVENTS.IDENTITY_SUBMITTED, async (e) => {
     const admins = await adminUserIds();
     const tokens = await tokensForUsers(admins);

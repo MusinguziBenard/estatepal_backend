@@ -204,3 +204,7 @@ CREATE TABLE IF NOT EXISTS email_codes (
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_email_codes_user ON email_codes (user_id, used);
+
+-- ─── v3: phone verification + ID verification name field (matches frontend contract) ───
+ALTER TABLE users ADD COLUMN IF NOT EXISTS phone_verified_at TIMESTAMPTZ;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS id_full_name TEXT; -- name as given on the submitted national ID photo
