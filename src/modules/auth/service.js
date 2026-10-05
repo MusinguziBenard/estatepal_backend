@@ -54,7 +54,7 @@ async function sendEmailCodeInternal(userId, email) {
   await supabase.from('email_codes').insert({ user_id: userId, email, code, expires_at: expires });
 
   if (config.env !== 'production') console.log(`[email-otp] ${email} -> ${code}`);
-  await sendVerificationCode(email, code);
+  return sendVerificationCode(email, code);
 }
 
 /**
@@ -72,8 +72,18 @@ async function register({ name, phone, password, email, acceptedTerms, avatar })
   if (!password || String(password).length < 6) throw validation('Password must be at least 6 characters');
   if (!acceptedTerms) throw validation('Please accept the Terms of Use and Privacy Policy');
 
-  const { data: existingPhone } = await supabase.from('users').select('id').eq('phone', normPhone).maybeSingle();
-  if (existingPhone) throw conflict('An account with this phone number already exists');
+  const { data: existingPhone } = await supabase.from('users').select('*').eq('phone', normPhone).maybeSingle();
+  if (existingPhone) {
+    // Half-finished earlier signup (email given, never verified): let them resume instead of locking them out.
+    const sameOwner = existingPhone.email && !existingPhone.email_verified_at && (await comparePassword(password, existingPhone.password_hash));
+    if (!sameOwner) throw conflict('An account with this phone number already exists');
+    const target = normEmail || existingPhone.email;
+    if (normEmail && normEmail !== existingPhone.email) {
+      await supabase.from('users').update({ email: normEmail }).eq('id', existingPhone.id);
+    }
+    const sent = await sendEmailCodeInternal(existingPhone.id, target);
+    return { needsEmailVerification: true, email: target, emailSent: !!sent?.ok, message: sent?.ok ? undefined : 'We could not send the code. Tap "Resend code".' };
+  }
 
   if (normEmail) {
     const { data: existingEmail } = await supabase.from('users').select('id').eq('email', normEmail).maybeSingle();
@@ -104,8 +114,13 @@ async function register({ name, phone, password, email, acceptedTerms, avatar })
   emit(EVENTS.USER_SIGNED_UP, { userId: user.id, phone: user.phone, name: user.name });
 
   if (normEmail) {
-    await sendEmailCodeInternal(user.id, normEmail);
-    return { needsEmailVerification: true, email: normEmail };
+    const sent = await sendEmailCodeInternal(user.id, normEmail);
+    return {
+      needsEmailVerification: true,
+      email: normEmail,
+      emailSent: !!sent?.ok,
+      message: sent?.ok ? undefined : 'Account created, but we could not send the code. Tap "Resend code".',
+    };
   }
 
   const token = await createSession(user.id);
@@ -129,8 +144,13 @@ async function login({ phone, email, password }) {
   }
 
   if (user.email && !user.email_verified_at) {
-    await sendEmailCodeInternal(user.id, user.email);
-    return { needsEmailVerification: true, email: user.email, message: 'Verify your email first — we just sent you a new code.' };
+    const sent = await sendEmailCodeInternal(user.id, user.email);
+    return {
+      needsEmailVerification: true,
+      email: user.email,
+      emailSent: !!sent?.ok,
+      message: sent?.ok ? 'Verify your email first — we just sent you a new code.' : 'Verify your email first. We could not send a code, tap "Resend code".',
+    };
   }
 
   const token = await createSession(user.id);
@@ -181,7 +201,8 @@ async function resendEmailOtp(emailRaw) {
   const { data: user } = await supabase.from('users').select('*').eq('email', email).maybeSingle();
   if (!user) throw notFound('No account with this email');
   if (user.email_verified_at) return { ok: true, message: 'This email is already verified — just log in.' };
-  await sendEmailCodeInternal(user.id, email);
+  const sent = await sendEmailCodeInternal(user.id, email);
+  if (!sent?.ok) throw validation('Could not send the email right now. Please try again shortly.');
   return { ok: true };
 }
 

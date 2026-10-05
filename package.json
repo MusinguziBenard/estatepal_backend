@@ -1,7 +1,7 @@
 {
   "name": "estatepal-backend",
   "version": "1.0.0",
-  "description": "EstatePal API — land & sugarcane marketplace backend",
+  "description": "EstatePal API \u2014 land & sugarcane marketplace backend",
   "main": "src/server.js",
   "type": "commonjs",
   "scripts": {
@@ -24,6 +24,7 @@
     "helmet": "^8.0.0",
     "morgan": "^1.10.0",
     "multer": "^1.4.5-lts.1",
+    "nodemailer": "^6.9.16",
     "postgres": "^3.4.9",
     "socket.io": "^4.8.1",
     "uuid": "^11.0.5",
