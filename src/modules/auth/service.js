@@ -137,7 +137,12 @@ async function login({ phone, email, password }) {
 
   let query = supabase.from('users').select('*');
   query = phone ? query.eq('phone', normalizePhone(phone)) : query.eq('email', normalizeEmail(email));
-  const { data: user } = await query.maybeSingle();
+  const { data: user, error } = await query.maybeSingle();
+  // Never mask DB/auth failures as "wrong password" (e.g. Unregistered API key).
+  if (error) {
+    console.error('[auth/login] supabase error:', error.message);
+    throw error;
+  }
 
   if (!user || !(await comparePassword(password, user.password_hash))) {
     throw unauthorized('Wrong phone/email or password');
@@ -166,7 +171,8 @@ async function login({ phone, email, password }) {
 async function verifyEmail(emailRaw, code) {
   const email = normalizeEmail(emailRaw);
   if (!email) throw validation('Email required');
-  const { data: user } = await supabase.from('users').select('*').eq('email', email).maybeSingle();
+  const { data: user, error: userErr } = await supabase.from('users').select('*').eq('email', email).maybeSingle();
+  if (userErr) { console.error('[auth/verifyEmail]', userErr.message); throw userErr; }
   if (!user) throw notFound('No account with this email');
 
   const { data: rows } = await supabase

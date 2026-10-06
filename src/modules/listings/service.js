@@ -196,11 +196,24 @@ async function create(draft, userId) {
   const unitPrice = Number(draft.unitPrice);
   if (!(acreage > 0) || !(unitPrice > 0)) throw validation('Invalid acreage or price');
 
-  const leaseYears = draft.transactionType === 'LEASE' ? Number(draft.leaseYears) || 1 : 1;
-  const value = Math.round(acreage * unitPrice * (draft.transactionType === 'LEASE' ? leaseYears : 1));
+  // LEASE multiplier: sugarcane uses harvests/cuttings; land uses leaseYears
+  const harvests =
+    draft.harvests != null && Number(draft.harvests) > 0
+      ? Number(draft.harvests)
+      : draft.leaseYears != null && Number(draft.leaseYears) > 0
+        ? Number(draft.leaseYears)
+        : null;
+  const leaseYears = draft.transactionType === 'LEASE' ? harvests || 1 : null;
+  const multiplier = draft.transactionType === 'LEASE' ? leaseYears || 1 : 1;
+  const value = Math.round(acreage * unitPrice * multiplier);
   const fee = listingFee(value, draft.package || 'STANDARD');
   const seq = await nextSeq();
   const ref = reference('LST', seq);
+
+  const caneAgeMonths =
+    draft.caneAgeMonths != null && Number(draft.caneAgeMonths) > 0
+      ? Number(draft.caneAgeMonths)
+      : null;
 
   // Upload images if base64 data URLs; otherwise keep URLs
   const images = [];
@@ -217,12 +230,15 @@ async function create(draft, userId) {
   const row = {
     seller_id: userId,
     title: draft.title,
+    description: draft.description ? String(draft.description).trim() || null : null,
     category: draft.category,
     transaction_type: draft.transactionType,
     acreage,
     advertised_value_ugx: value,
     unit_price: unitPrice,
-    lease_years: draft.transactionType === 'LEASE' ? leaseYears : null,
+    lease_years: leaseYears,
+    cane_age_months: draft.category === 'SUGARCANE_PLANTATION' ? caneAgeMonths : null,
+    harvests: draft.category === 'SUGARCANE_PLANTATION' && draft.transactionType === 'LEASE' ? harvests : null,
     district: draft.district,
     subcounty: draft.subcounty,
     custom_location: draft.customLocation || null,

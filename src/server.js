@@ -18,14 +18,14 @@ async function verifyConnections() {
     results.push(['Postgres', false, err.message]);
   }
 
-  // Supabase (service-role)
+  // Supabase REST (service-role key) — table probe, not Auth Admin API
   try {
     const { supabase } = require('./db/supabase');
-    const { error } = await supabase.auth.admin.listUsers({ perPage: 1 });
+    const { error } = await supabase.from('users').select('id').limit(1);
     if (error) throw error;
     results.push(['Supabase', true, 'ok']);
   } catch (err) {
-    results.push(['Supabase', false, err.message]);
+    results.push(['Supabase', false, err.message || String(err)]);
   }
 
   // Cloudinary (via your wrapper)

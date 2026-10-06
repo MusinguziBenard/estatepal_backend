@@ -56,11 +56,14 @@ router.post(
   validate(
     z.object({
       title: z.string().min(3),
+      description: z.string().max(4000).optional().or(z.literal('')).optional(),
       category: z.enum(['LAND', 'SUGARCANE_PLANTATION']),
       transactionType: z.enum(['SALE', 'LEASE']),
       acreage: z.number().positive().or(z.string()),
       unitPrice: z.number().positive().or(z.string()),
       leaseYears: z.number().optional().or(z.string().optional()),
+      caneAgeMonths: z.number().optional().or(z.string().optional()),
+      harvests: z.number().optional().or(z.string().optional()),
       district: z.string().min(1),
       subcounty: z.string().min(1),
       customLocation: z.string().optional(),
@@ -81,6 +84,9 @@ router.post(
       acreage: Number(req.body.acreage),
       unitPrice: Number(req.body.unitPrice),
       leaseYears: req.body.leaseYears != null ? Number(req.body.leaseYears) : undefined,
+      caneAgeMonths: req.body.caneAgeMonths != null ? Number(req.body.caneAgeMonths) : undefined,
+      harvests: req.body.harvests != null ? Number(req.body.harvests) : undefined,
+      description: req.body.description || undefined,
     };
     const created = await listings.create(body, req.user.id);
     res.status(201).json(created);

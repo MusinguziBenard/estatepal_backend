@@ -208,3 +208,18 @@ CREATE INDEX IF NOT EXISTS idx_email_codes_user ON email_codes (user_id, used);
 -- ─── v3: phone verification + ID verification name field (matches frontend contract) ───
 ALTER TABLE users ADD COLUMN IF NOT EXISTS phone_verified_at TIMESTAMPTZ;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS id_full_name TEXT; -- name as given on the submitted national ID photo
+
+-- ─── v4: listing detail fields (description, cane age, harvests/cuttings) ───
+ALTER TABLE listings ADD COLUMN IF NOT EXISTS description TEXT;
+ALTER TABLE listings ADD COLUMN IF NOT EXISTS cane_age_months INT;
+ALTER TABLE listings ADD COLUMN IF NOT EXISTS harvests INT;
+
+-- Optional search boost for description
+DROP INDEX IF EXISTS idx_listings_search;
+CREATE INDEX IF NOT EXISTS idx_listings_search ON listings
+  USING gin (to_tsvector('english',
+    coalesce(title,'') || ' ' ||
+    coalesce(description,'') || ' ' ||
+    coalesce(district,'') || ' ' ||
+    coalesce(subcounty,'') || ' ' ||
+    coalesce(custom_location,'')));

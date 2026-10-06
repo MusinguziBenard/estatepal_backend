@@ -17,10 +17,13 @@ function asyncHandler(fn) {
 }
 
 function errorMiddleware(err, _req, res, _next) {
-  const status = err.status || 500;
-  const message = status === 500 ? 'Internal server error' : err.message;
-  if (status === 500) console.error('[error]', err);
-  res.status(status).json({ message, code: err.code || 'ERROR' });
+  // Postgrest / Supabase errors often have .message and .code but no .status
+  const isDb = err && (err.code === 'PGRST301' || /unregistered api key|jwt|api key/i.test(String(err.message || '')));
+  const status = err.status || (isDb ? 503 : 500);
+  const expose = status < 500 || process.env.NODE_ENV !== 'production' || isDb;
+  const message = expose ? (err.message || 'Internal server error') : 'Internal server error';
+  if (status >= 500 || isDb) console.error('[error]', err.message || err);
+  res.status(status).json({ message, code: err.code || (isDb ? 'DB_ERROR' : 'ERROR') });
 }
 
 module.exports = {
