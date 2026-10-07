@@ -401,12 +401,37 @@ async function resetPassword({ email: emailRaw, code, newPassword }) {
   return { ok: true, message: 'Password updated. You can sign in with your new password.' };
 }
 
+
+/** Check reset OTP without consuming it — UI can advance to “new password” step. */
+async function verifyResetCode(emailRaw, code) {
+  const email = normalizeEmail(emailRaw);
+  if (!email) throw validation('Email is required');
+  if (!code || String(code).trim().length < 4) throw validation('Enter the code from your email');
+
+  const { data: user } = await supabase.from('users').select('id').eq('email', email).maybeSingle();
+  if (!user) throw unauthorized('Wrong or expired code');
+
+  const { data: rows } = await supabase
+    .from('email_codes')
+    .select('*')
+    .eq('user_id', user.id)
+    .eq('used', false)
+    .gte('expires_at', new Date().toISOString())
+    .order('created_at', { ascending: false })
+    .limit(1);
+
+  const rec = rows?.[0];
+  if (!rec || rec.code !== String(code).trim()) throw unauthorized('Wrong or expired code');
+  return { ok: true, message: 'Code confirmed. Choose a new password.' };
+}
+
 module.exports = {
   register,
   login,
   verifyEmail,
   resendEmailOtp,
   requestPasswordReset,
+  verifyResetCode,
   resetPassword,
   requestPhoneOtp,
   verifyPhone,

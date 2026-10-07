@@ -77,6 +77,15 @@ router.post(
   })
 );
 
+
+router.post(
+  '/verify-reset-code',
+  validate(z.object({ email: z.string().email(), code: z.string().min(4) })),
+  asyncHandler(async (req, res) => {
+    res.json(await auth.verifyResetCode(req.body.email, req.body.code));
+  })
+);
+
 router.post(
   '/reset-password',
   validate(
