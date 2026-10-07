@@ -67,10 +67,10 @@ router.post(
       district: z.string().min(1),
       subcounty: z.string().min(1),
       customLocation: z.string().optional(),
-      gps: z
-        .object({ latitude: z.number(), longitude: z.number() })
-        .optional()
-        .nullable(),
+      gps: z.object({
+        latitude: z.number().min(-90).max(90),
+        longitude: z.number().min(-180).max(180),
+      }),
       package: z.enum(['STANDARD', 'PREMIUM']).default('STANDARD'),
       ownership: z.enum(['OWNER', 'BROKER']),
       images: z.array(z.string()).min(1).max(5),
