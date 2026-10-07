@@ -68,6 +68,30 @@ router.post(
   })
 );
 
+// ─── Forgot / reset password (public, email + OTP) ───
+router.post(
+  '/forgot-password',
+  validate(z.object({ email: z.string().email() })),
+  asyncHandler(async (req, res) => {
+    res.json(await auth.requestPasswordReset(req.body.email));
+  })
+);
+
+router.post(
+  '/reset-password',
+  validate(
+    z.object({
+      email: z.string().email(),
+      code: z.string().min(4),
+      newPassword: z.string().min(6),
+    })
+  ),
+  asyncHandler(async (req, res) => {
+    res.json(await auth.resetPassword(req.body));
+  })
+);
+
+
 // ─── Phone verification: authenticated, optional, always a later step ───
 router.post(
   '/request-phone-otp',

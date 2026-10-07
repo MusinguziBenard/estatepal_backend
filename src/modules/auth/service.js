@@ -332,11 +332,82 @@ async function revokeSession(rawToken) {
   await supabase.from('sessions').delete().eq('token_hash', sha256(rawToken));
 }
 
+
+/**
+ * Forgot password — email only (needs an email on the account).
+ * Always returns a generic ok so we do not leak whether the email is registered.
+ * Code is still stored when the user exists.
+ */
+async function requestPasswordReset(emailRaw) {
+  const email = normalizeEmail(emailRaw);
+  if (!email) throw validation('Email is required');
+
+  const { data: user } = await supabase.from('users').select('*').eq('email', email).maybeSingle();
+  if (!user) {
+    // Do not reveal missing accounts
+    return { ok: true, message: 'If that email is registered, a reset code has been sent.' };
+  }
+  if (!user.password_hash) {
+    return { ok: true, message: 'If that email is registered, a reset code has been sent.' };
+  }
+
+  const sent = await sendEmailCodeInternal(user.id, email);
+  if (!sent?.ok) {
+    // Still surface send failures so ops can see Resend/domain issues
+    throw validation(
+      sent?.error?.includes('403') || sent?.error?.includes('domain')
+        ? 'Email could not be delivered. The server needs a verified sending domain.'
+        : 'Could not send the reset code. Please try again shortly.'
+    );
+  }
+  return { ok: true, message: 'If that email is registered, a reset code has been sent.', emailSent: true };
+}
+
+/**
+ * Reset password with email + OTP from requestPasswordReset.
+ * Invalidates other sessions after a successful change.
+ */
+async function resetPassword({ email: emailRaw, code, newPassword }) {
+  const email = normalizeEmail(emailRaw);
+  if (!email) throw validation('Email is required');
+  if (!newPassword || String(newPassword).length < 6) {
+    throw validation('New password must be at least 6 characters');
+  }
+
+  const { data: user, error: userErr } = await supabase.from('users').select('*').eq('email', email).maybeSingle();
+  if (userErr) { console.error('[auth/resetPassword]', userErr.message); throw userErr; }
+  if (!user) throw unauthorized('Wrong or expired code');
+
+  const { data: rows } = await supabase
+    .from('email_codes')
+    .select('*')
+    .eq('user_id', user.id)
+    .eq('used', false)
+    .gte('expires_at', new Date().toISOString())
+    .order('created_at', { ascending: false })
+    .limit(1);
+
+  const rec = rows?.[0];
+  if (!rec || rec.code !== String(code).trim()) throw unauthorized('Wrong or expired code');
+
+  await supabase.from('email_codes').update({ used: true }).eq('id', rec.id);
+
+  const passwordHash = await hashPassword(newPassword);
+  await supabase.from('users').update({ password_hash: passwordHash }).eq('id', user.id);
+
+  // Force re-login everywhere
+  await supabase.from('sessions').delete().eq('user_id', user.id);
+
+  return { ok: true, message: 'Password updated. You can sign in with your new password.' };
+}
+
 module.exports = {
   register,
   login,
   verifyEmail,
   resendEmailOtp,
+  requestPasswordReset,
+  resetPassword,
   requestPhoneOtp,
   verifyPhone,
   submitIdentity,
