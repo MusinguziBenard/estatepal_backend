@@ -215,16 +215,26 @@ async function create(draft, userId) {
       ? Number(draft.caneAgeMonths)
       : null;
 
-  // Upload images if base64 data URLs; otherwise keep URLs
+  // Upload images if base64 data URLs; keep remote http(s) URLs.
+  // Reject Expo/device-local paths (file://, content://) — they are not reachable on the web.
   const images = [];
   for (const img of draft.images || []) {
-    if (typeof img === 'string' && img.startsWith('data:')) {
+    if (typeof img !== 'string' || !img) continue;
+    if (img.startsWith('data:')) {
       const b64 = img.replace(/^data:image\/\w+;base64,/, '');
-      const url = await uploadImage(Buffer.from(b64, 'base64'), { publicId: `${ref}-${images.length}` });
+      const url = await uploadImage(Buffer.from(b64, 'base64'), {
+        folder: 'estatepal/listings',
+        publicId: `${ref}-${images.length}`,
+      });
       images.push(url);
-    } else if (img) {
+    } else if (/^https?:\/\//i.test(img)) {
       images.push(img);
+    } else {
+      console.warn('[listings] skipping non-uploadable image path:', String(img).slice(0, 80));
     }
+  }
+  if (images.length === 0) {
+    throw validation('At least one uploadable image is required (base64 data URL or https URL)');
   }
 
   const row = {

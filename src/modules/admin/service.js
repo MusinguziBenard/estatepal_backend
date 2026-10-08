@@ -35,9 +35,11 @@ async function dashboard() {
 }
 
 async function listPendingProofs() {
+  // Explicit FK aliases: payment_proofs has two FKs to users (user_id + reviewed_by),
+  // so bare `users(...)` fails with "more than one relationship was found".
   const { data, error } = await supabase
     .from('payment_proofs')
-    .select('*, users(phone, name), listings(title, reference)')
+    .select('*, users:user_id(phone, name), listings:listing_id(title, reference)')
     .eq('status', 'PENDING')
     .order('created_at', { ascending: true });
   if (error) throw error;
