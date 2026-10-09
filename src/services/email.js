@@ -1,10 +1,10 @@
 /**
  * Transactional email.
- * Provider order: Resend HTTP API (RESEND_API_KEY) → SMTP (SMTP_HOST) → console fallback (non-production).
+ * Provider order: Brevo (BREVO_API_KEY) → Resend (RESEND_API_KEY) → SMTP → console (non-production).
  * Never throws: callers get { ok, error, dev? } so a mail problem can't crash signup/login.
  *
- * Production tip: Render free tier often blocks outbound SMTP (587/465). Prefer RESEND_API_KEY
- * (HTTPS works everywhere). Verify a domain on Resend for reliable delivery to any inbox.
+ * Production tip: Prefer BREVO_API_KEY or RESEND_API_KEY (HTTPS works on Render).
+ * EMAIL_FROM must be a sender verified on that provider.
  */
 const config = require('../config');
 
@@ -34,6 +34,43 @@ function getTransporter() {
   return transporter;
 }
 
+/** Parse "Name <email@x.com>" or bare email into { name, email }. */
+function parseFrom(from) {
+  const raw = (from || '').trim() || 'EstatePal <noreply@schoolmasteruganda.com>';
+  const m = raw.match(/^(.*?)\s*<([^>]+)>$/);
+  if (m) {
+    return { name: (m[1] || 'EstatePal').trim() || 'EstatePal', email: m[2].trim() };
+  }
+  if (raw.includes('@')) return { name: 'EstatePal', email: raw };
+  return { name: 'EstatePal', email: raw };
+}
+
+async function sendViaBrevo({ to, subject, html, text }) {
+  const key = process.env.BREVO_API_KEY;
+  if (!key) throw new Error('BREVO_API_KEY not set');
+
+  const sender = parseFrom(config.smtp.from);
+  const res = await fetch('https://api.brevo.com/v3/smtp/email', {
+    method: 'POST',
+    headers: {
+      accept: 'application/json',
+      'content-type': 'application/json',
+      'api-key': key,
+    },
+    body: JSON.stringify({
+      sender,
+      to: [{ email: to }],
+      subject,
+      htmlContent: html || `<pre>${text || ''}</pre>`,
+      textContent: text || undefined,
+    }),
+  });
+  const body = await res.text().catch(() => '');
+  // Brevo success is typically 201
+  if (!res.ok) throw new Error(`Brevo ${res.status}: ${body}`);
+  return body;
+}
+
 async function sendViaResend({ to, subject, html, text }) {
   const key = process.env.RESEND_API_KEY;
   if (!key) throw new Error('RESEND_API_KEY not set');
@@ -60,6 +97,13 @@ async function sendEmail({ to, subject, html, text }) {
   }
 
   try {
+    // Prefer Brevo when configured
+    if (process.env.BREVO_API_KEY) {
+      await sendViaBrevo({ to, subject, html, text });
+      console.log(`[email] sent via Brevo → ${to}`);
+      return { ok: true };
+    }
+
     if (process.env.RESEND_API_KEY) {
       await sendViaResend({ to, subject, html, text });
       console.log(`[email] sent via Resend → ${to}`);
@@ -69,10 +113,12 @@ async function sendEmail({ to, subject, html, text }) {
     const t = getTransporter();
     if (!t) {
       if (config.env === 'production') {
-        console.error('[email] no provider configured — set RESEND_API_KEY (recommended) or SMTP_*');
+        console.error(
+          '[email] no provider configured — set BREVO_API_KEY (recommended), RESEND_API_KEY, or SMTP_*'
+        );
         return { ok: false, error: 'Email is not configured on the server' };
       }
-      console.log('[email] (dev fallback — no SMTP/Resend) code is in the log above');
+      console.log('[email] (dev fallback — no provider) code is in the log above');
       return { ok: true, dev: true };
     }
 
